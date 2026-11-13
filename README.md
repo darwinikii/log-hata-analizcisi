@@ -119,9 +119,8 @@ tests/test_contract.py::test_all_eval_cases PASSED                       [100%]
 │   ├── icon.png               # 512x512 şeffaf ikon
 │   ├── cover.png              # 1200x630 kapak görseli
 │   └── screenshots/
-│       ├── 1.png              # 1280x800 Dashboard ekran görüntüsü
-│       ├── 2.png              # 1280x800 Güvenlik kalkanı ekran görüntüsü
-│       └── 3.png              # 1280x800 IDE ve CI ekran görüntüsü
+│       ├── 1.png              # 1280x800 Swagger UI ekran görüntüsü
+│       └── 2.png              # 1280x800 Canlı /health test çıktısı
 ├── EVAL_REPORT.md             # Kapsamlı değerlendirme ve başarı raporu
 ├── README.md                  # Proje ana dokümantasyonu
 └── .gitignore                 # Güvenlik ve önbellek yoksayma kuralları
