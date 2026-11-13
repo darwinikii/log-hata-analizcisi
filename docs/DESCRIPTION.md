@@ -89,3 +89,11 @@
   "actions": []
 }
 ```
+
+---
+
+## 6. Sınırlamalar
+
+- Tek seferde işlenen `log_text` uzunluğu en fazla **8000 karakter** ile sınırlandırılmıştır.
+- Ajan durumsuz (stateless) çalıştığı için geçmiş loglar arasında korelasyon kurmaz; yalnızca gönderilen anlık logu inceler.
+- Dış ağ erişimi (`network.allow: []`) kapalı olduğundan log içindeki harici URL'lere istek atılmaz.
