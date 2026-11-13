@@ -17,7 +17,6 @@ assets:
   screenshots:
     - assets/screenshots/1.png
     - assets/screenshots/2.png
-    - assets/screenshots/3.png
 types:
   - api
   - event
