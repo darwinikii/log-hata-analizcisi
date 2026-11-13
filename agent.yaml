@@ -1,0 +1,117 @@
+spec_version: "1.1"
+slug: log-hata-analizcisi
+name: Akıllı Log ve Hata Analizcisi
+version: 1.0.0
+author:
+  name: Devran Öncüt
+  github: darwinikii
+category: yazilim-gelistirme
+short_note: "Uygulama hata loglarını analiz eder, kişisel verileri maskeler, kök nedeni ve çözüm önerisini sunar."
+description_file: docs/DESCRIPTION.md
+languages:
+  - tr
+  - en
+assets:
+  icon: assets/icon.png
+  cover: assets/cover.png
+  screenshots:
+    - assets/screenshots/1.png
+    - assets/screenshots/2.png
+    - assets/screenshots/3.png
+types:
+  - api
+  - event
+  - mcp
+  - ci
+runtime:
+  port: 8080
+  memory_mb: 512
+  cpu: 0.5
+  models:
+    - fast
+network:
+  allow: []
+operations:
+  analyze_log:
+    description: "Hata logunu veya stack trace metnini analiz eder, KVKK/sır verilerini maskeler, kök nedeni ve çözüm önerisini döner."
+    timeout_s: 15
+    input_schema:
+      type: object
+      required:
+        - log_text
+      properties:
+        log_text:
+          type: string
+          maxLength: 8000
+        framework:
+          type: string
+          default: "auto"
+    output_schema:
+      type: object
+      required:
+        - error_type
+        - severity
+        - file_location
+        - root_cause
+        - suggested_fix
+        - sanitized_log
+        - masked_pii_count
+      properties:
+        error_type:
+          type: string
+        severity:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+        file_location:
+          type: string
+        root_cause:
+          type: string
+        suggested_fix:
+          type: string
+        sanitized_log:
+          type: string
+        masked_pii_count:
+          type: integer
+events:
+  error.logged: analyze_log
+  ci.failed: analyze_log
+config_schema:
+  type: object
+  required: []
+  properties:
+    mask_pii:
+      type: boolean
+      default: true
+      title: "Kişisel verileri ve sırları maskele (KVKK)"
+    fail_on_severity:
+      type: string
+      enum:
+        - high
+        - critical
+      default: critical
+      title: "CI adımını başarısız sayacak ciddiyet eşiği"
+    response_language:
+      type: string
+      enum:
+        - tr
+        - en
+      default: tr
+      title: "Analiz yanıt dili"
+demo:
+  config:
+    mask_pii: true
+    fail_on_severity: critical
+    response_language: tr
+  samples:
+    - operation: analyze_log
+      input:
+        log_text: "2026-11-13 14:22:01 ERROR [billing] user=ahmet.yilmaz@example.com ZeroDivisionError: division by zero in app/services/invoice.py:84"
+        framework: "fastapi"
+    - operation: analyze_log
+      input:
+        log_text: "TypeError: Cannot read properties of undefined (reading 'map') at ProductList (src/components/ProductList.tsx:27:18)"
+        framework: "nextjs"

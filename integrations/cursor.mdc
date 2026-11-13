@@ -1,0 +1,51 @@
+---
+description: {{AGENT_NAME}} ({{AGENT_SLUG}}) Kural ve Entegrasyon Yönergesi
+globs: ["**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.java", "**/*.go", "**/*.log"]
+alwaysApply: false
+---
+
+# Cursor Entegrasyon Kuralı: {{AGENT_NAME}}
+
+Bu kural dosyası, Cursor editöründe **{{AGENT_NAME}}** (`{{AGENT_SLUG}}`) platform ajanının sunucu tarafı ve MCP aracı olarak güvenli entegrasyon kurallarını belirler.
+
+---
+
+## 1. Sunucu Tarafı Entegrasyon Kuralları
+
+- **Sunucu Katmanı Zorunluluğu:** `{{AGENT_SLUG}}` çağrıları yalnızca sunucu tarafındaki servis veya global exception handler/middleware katmanından yapılmalıdır. İstemci koduna (frontend) kesinlikle eklenemez.
+- **Sır Yönetimi:** `PLATFORM_SECRET_KEY` daima `.env` dosyasından okunmalıdır. `.env` dosyasının `.gitignore` listesinde yer aldığı kontrol edilmelidir.
+- **Zaman Aşımı ve Fallback:** `analyze_log` API çağrılarında en fazla 2 saniye (`timeout: 2.0s`) süre tanınmalı, hata durumunda try/except fallback uygulanmalıdır. Ajan hatası ana akışı asla kesintiye uğratamaz.
+- **Olaylar:** `error.logged` ve `ci.failed` olayları ana akışı bloklamayan asenkron arka plan görevleri olarak tetiklenmelidir.
+- **Uç Nokta:** `POST https://api.platform.tld/v1/agents/{{AGENT_SLUG}}/invoke`
+
+---
+
+## 2. Cursor MCP Araç Yapılandırması
+
+Cursor Settings > Features > MCP alanına şu bağlantıyı ekleyerek ajanı bir hata ayıklama aracı olarak kullanabilirsiniz:
+
+- **Name:** `{{AGENT_SLUG}}`
+- **Type:** `sse` (veya `http`)
+- **URL:** `https://mcp.platform.tld/{{AGENT_SLUG}}`
+- **Headers:** `{"Authorization": "Bearer PLATFORM_SECRET_KEY"}`
+
+---
+
+## 3. Kullanılabilir Operasyonlar
+
+{{OPERATIONS}}
+
+- **`analyze_log`**:
+  Hata logunu inceleyerek `error_type`, `severity`, `file_location`, `root_cause`, `suggested_fix` ve KVKK maskelenmiş `sanitized_log` döner.
+
+---
+
+## 4. Cursor Chat Hata Ayıklama İstem Şablonu
+
+Terminalde veya konsolda bir hata yığını oluştuğunda Cursor Chat (`Ctrl+L` / `Cmd+L`) penceresinde şu istemi verin:
+
+```text
+@{{AGENT_SLUG}} Terminaldeki şu log kaydını analiz et, dosya konumunu ve onarım yamasını üret:
+
+{{SAMPLE_INPUT}}
+```
