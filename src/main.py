@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 app = FastAPI(
     title="Akıllı Log ve Hata Analizcisi",
-    version="1.0.0",
+    version="1.1.0",
     description="Agent Pazaryeri v1.1 - LLM Tabanlı Log ve Hata Analiz Ajanı"
 )
 
@@ -227,6 +227,67 @@ def analyze_log_with_llm(sanitized_log: str, framework: str, lang: str, file_loc
     }
 
 
+def summarize_logs_with_llm(sanitized_logs: list[str], framework: str, lang: str) -> Dict[str, Any]:
+    """Sanitize edilmiş log listesini LLM ile analiz eder, hata gruplarını ve önerileri döner."""
+    llm_base = os.environ.get("LLM_BASE_URL", "http://localhost:4000/v1").strip().rstrip("/")
+    if not llm_base.endswith("/v1"):
+        llm_base = f"{llm_base}/v1"
+    llm_key = os.environ.get("LLM_API_KEY", "platform-fast-token").strip()
+    model_name = os.environ.get("LLM_MODEL", "fast").strip()
+
+    target_lang = "English" if lang == "en" else "Turkish"
+    system_prompt = (
+        f"You are a professional software engineer and log diagnostic agent for framework '{framework}'. "
+        f"Analyze the following batch of sanitized logs and output ONLY a valid JSON object with the following schema: "
+        f'{{"critical_count": 0, "top_errors": [{{"error_type": "string", "count": 1, "severity": "low|medium|high|critical"}}], '
+        f'"summary": "concise overview in {target_lang}", "recommended_actions": ["action in {target_lang}"]}}.'
+    )
+
+    batch_text = "\n---\n".join(f"Log {i+1}:\n{entry}" for i, entry in enumerate(sanitized_logs))
+
+    client = OpenAI(base_url=llm_base, api_key=llm_key, timeout=60.0)
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Analyze the following batch of {len(sanitized_logs)} logs:\n{batch_text}"}
+        ],
+        temperature=0.1,
+        response_format={"type": "json_object"}
+    )
+
+    content = (response.choices[0].message.content or "{}").strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.DOTALL).strip()
+    result = json.loads(content)
+
+    top_errors_raw = result.get("top_errors", [])
+    valid_top_errors = []
+    if isinstance(top_errors_raw, list):
+        for item in top_errors_raw:
+            if isinstance(item, dict):
+                sev = item.get("severity", "medium")
+                if sev not in ["low", "medium", "high", "critical"]:
+                    sev = "medium"
+                valid_top_errors.append({
+                    "error_type": str(item.get("error_type", "ApplicationError")),
+                    "count": int(item.get("count", 1)),
+                    "severity": sev
+                })
+
+    rec_actions_raw = result.get("recommended_actions", [])
+    valid_actions = []
+    if isinstance(rec_actions_raw, list):
+        valid_actions = [str(a) for a in rec_actions_raw if isinstance(a, str) and a.strip()]
+
+    return {
+        "critical_count": int(result.get("critical_count", 0)),
+        "top_errors": valid_top_errors,
+        "summary": str(result.get("summary", "Log kayıtları başarıyla özetlendi.")),
+        "recommended_actions": valid_actions
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Servis sağlık durumunu döner."""
@@ -239,7 +300,7 @@ async def root_info():
     return {
         "status": "ok",
         "agent": "log-hata-analizcisi",
-        "version": "1.0.0"
+        "version": "1.1.0"
     }
 
 
@@ -247,7 +308,7 @@ async def root_info():
 @app.post("/invoke")
 @app.post("/")
 async def invoke_agent(request: Request):
-    """Gelen log analizi isteğini doğrular, maskeler, analiz eder ve standart zarfta yanıtlar."""
+    """Gelen log analizi veya özetleme isteğini doğrular, maskeler, işler ve standart zarfta yanıtlar."""
     raw_body = await request.body()
 
     verify_request_signature(request, raw_body)
@@ -276,56 +337,166 @@ async def invoke_agent(request: Request):
     )
     logger.info("request tenant_id=%s request_id=%s operation=%s", tenant_id, request_id, operation)
 
-    if operation != "analyze_log":
+    if operation not in ("analyze_log", "summarize_logs"):
         return JSONResponse(
             status_code=422,
             content={"error": {"code": "unknown_operation", "message": f"Operation '{operation}' is not supported"}}
         )
 
     input_data = body.get("input") if isinstance(body.get("input"), dict) else body
-    log_text = input_data.get("log_text")
-    framework = str(input_data.get("framework") or "auto")
-
-    if log_text is None:
-        return JSONResponse(
-            status_code=422,
-            content={"error": {"code": "invalid_input", "message": "log_text is required"}}
-        )
-    if not isinstance(log_text, str):
-        return JSONResponse(
-            status_code=422,
-            content={"error": {"code": "invalid_input", "message": "log_text must be a string"}}
-        )
-    if not log_text.strip():
-        return JSONResponse(
-            status_code=422,
-            content={"error": {"code": "invalid_input", "message": "log_text cannot be empty"}}
-        )
-    if len(log_text) > 8000:
-        return JSONResponse(
-            status_code=422,
-            content={"error": {"code": "invalid_input", "message": "log_text exceeds maximum length of 8000 characters"}}
-        )
-
     config = body.get("config") or {}
     mask_pii = config.get("mask_pii", True)
     fail_on_severity = config.get("fail_on_severity", "critical")
     response_lang = config.get("response_language", "tr")
 
-    if mask_pii:
-        sanitized_log, masked_count = mask_sensitive_data(log_text)
-    else:
-        sanitized_log, masked_count = log_text, 0
+    if operation == "analyze_log":
+        log_text = input_data.get("log_text")
+        framework = str(input_data.get("framework") or "auto")
 
-    if detect_prompt_injection(log_text):
+        if log_text is None:
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "log_text is required"}}
+            )
+        if not isinstance(log_text, str):
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "log_text must be a string"}}
+            )
+        if not log_text.strip():
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "log_text cannot be empty"}}
+            )
+        if len(log_text) > 8000:
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "log_text exceeds maximum length of 8000 characters"}}
+            )
+
+        if mask_pii:
+            sanitized_log, masked_count = mask_sensitive_data(log_text)
+        else:
+            sanitized_log, masked_count = log_text, 0
+
+        if detect_prompt_injection(log_text):
+            output_data = {
+                "error_type": "SecurityWarning:PromptInjectionAttempt",
+                "severity": "high",
+                "file_location": "",
+                "root_cause": "Girdi içerisinde ajan talimatlarını değiştirmeye yönelik güvenlik ihlali (prompt injection) tespit edildi.",
+                "suggested_fix": "Kullanıcı girdilerini loglamadan önce sanitize edin ve kontrol karakterlerini filtreleyin.",
+                "sanitized_log": sanitized_log,
+                "masked_pii_count": masked_count
+            }
+            return {
+                "output": output_data,
+                "status": "needs_review",
+                "artifacts": [],
+                "actions": [],
+                "data": output_data,
+                **output_data
+            }
+
+        file_loc = extract_file_location(sanitized_log)
+        llm_analysis = analyze_log_with_llm(sanitized_log, framework, response_lang, file_loc)
+
         output_data = {
-            "error_type": "SecurityWarning:PromptInjectionAttempt",
-            "severity": "high",
-            "file_location": "",
-            "root_cause": "Girdi içerisinde ajan talimatlarını değiştirmeye yönelik güvenlik ihlali (prompt injection) tespit edildi.",
-            "suggested_fix": "Kullanıcı girdilerini loglamadan önce sanitize edin ve kontrol karakterlerini filtreleyin.",
+            "error_type": llm_analysis["error_type"],
+            "severity": llm_analysis["severity"],
+            "file_location": llm_analysis["file_location"],
+            "root_cause": llm_analysis["root_cause"],
+            "suggested_fix": llm_analysis["suggested_fix"],
             "sanitized_log": sanitized_log,
             "masked_pii_count": masked_count
+        }
+
+        sev = output_data["severity"]
+        if sev == "critical":
+            status = "fail"
+        elif fail_on_severity == "high" and sev in ("high", "critical"):
+            status = "fail"
+        elif sev == "high":
+            status = "needs_review"
+        else:
+            status = "ok"
+
+        return {
+            "output": output_data,
+            "status": status,
+            "artifacts": [],
+            "actions": [],
+            "data": output_data,
+            **output_data
+        }
+
+    logs = input_data.get("logs")
+    framework = str(input_data.get("framework") or "auto")
+
+    if logs is None:
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "invalid_input", "message": "logs is required"}}
+        )
+    if not isinstance(logs, list):
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "invalid_input", "message": "logs must be a list"}}
+        )
+    if len(logs) == 0:
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "invalid_input", "message": "logs cannot be empty"}}
+        )
+    if len(logs) > 50:
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "invalid_input", "message": "logs exceeds maximum length of 50 items"}}
+        )
+
+    for item in logs:
+        if not isinstance(item, str):
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "each log entry must be a string"}}
+            )
+        if not item.strip():
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "log entry cannot be empty"}}
+            )
+        if len(item) > 2000:
+            return JSONResponse(
+                status_code=422,
+                content={"error": {"code": "invalid_input", "message": "log entry exceeds maximum length of 2000 characters"}}
+            )
+
+    sanitized_logs = []
+    total_masked_count = 0
+    for item in logs:
+        if mask_pii:
+            s_text, m_cnt = mask_sensitive_data(item)
+            sanitized_logs.append(s_text)
+            total_masked_count += m_cnt
+        else:
+            sanitized_logs.append(item)
+
+    if any(detect_prompt_injection(item) for item in logs):
+        output_data = {
+            "total_logs": len(logs),
+            "critical_count": 0,
+            "top_errors": [
+                {
+                    "error_type": "SecurityWarning:PromptInjectionAttempt",
+                    "count": 1,
+                    "severity": "high"
+                }
+            ],
+            "summary": "Girdi içerisinde ajan talimatlarını değiştirmeye yönelik güvenlik ihlali (prompt injection) tespit edildi.",
+            "recommended_actions": [
+                "Kullanıcı girdilerini loglamadan önce sanitize edin ve kontrol karakterlerini filtreleyin."
+            ],
+            "masked_pii_count": total_masked_count
         }
         return {
             "output": output_data,
@@ -336,25 +507,26 @@ async def invoke_agent(request: Request):
             **output_data
         }
 
-    file_loc = extract_file_location(sanitized_log)
-    llm_analysis = analyze_log_with_llm(sanitized_log, framework, response_lang, file_loc)
+    llm_summary = summarize_logs_with_llm(sanitized_logs, framework, response_lang)
 
     output_data = {
-        "error_type": llm_analysis["error_type"],
-        "severity": llm_analysis["severity"],
-        "file_location": llm_analysis["file_location"],
-        "root_cause": llm_analysis["root_cause"],
-        "suggested_fix": llm_analysis["suggested_fix"],
-        "sanitized_log": sanitized_log,
-        "masked_pii_count": masked_count
+        "total_logs": len(logs),
+        "critical_count": int(llm_summary.get("critical_count", 0)),
+        "top_errors": llm_summary.get("top_errors", []),
+        "summary": str(llm_summary.get("summary", "")),
+        "recommended_actions": [str(a) for a in llm_summary.get("recommended_actions", [])],
+        "masked_pii_count": total_masked_count
     }
 
-    sev = output_data["severity"]
-    if sev == "critical":
+    critical_count = output_data["critical_count"]
+    has_critical = critical_count > 0 or any(err.get("severity") == "critical" for err in output_data["top_errors"])
+    has_high = any(err.get("severity") == "high" for err in output_data["top_errors"])
+
+    if has_critical:
         status = "fail"
-    elif fail_on_severity == "high" and sev in ("high", "critical"):
+    elif fail_on_severity == "high" and has_high:
         status = "fail"
-    elif sev == "high":
+    elif has_high:
         status = "needs_review"
     else:
         status = "ok"
