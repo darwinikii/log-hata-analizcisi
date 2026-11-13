@@ -57,3 +57,9 @@ Uygulamanızın mimari gereksinimine göre doğru entegrasyon kanalını seçin:
 ```json
 {{SAMPLE_INPUT}}
 ```
+
+---
+
+## 6. Doğrulama Adımı
+
+Entegrasyon tamamlandıktan sonra demo girdisi (`{{SAMPLE_INPUT}}`) ile sunucu tarafında test çağrısı yaparak yanıt zarfında `output` ve `status` alanlarının döndüğünü doğrulayın.
